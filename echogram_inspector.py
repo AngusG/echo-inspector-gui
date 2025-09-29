@@ -17,11 +17,11 @@ import echofilter.raw
 # --- Configuration ---
 # Constants for file matching
 RAW_FILE_SUFFIX = "_Sv_raw.csv"
-TRUTH_TOP_FILE_SUFFIX = "_surface.evl"
+TRUTH_TOP_FILE_SUFFIXES = ("_surface.evl", "_turbulence.evl")
 TRUTH_BOT_FILE_SUFFIX = "_bottom.evl"
 GEN_TOP_FILE_PREFIX = ".turbulence-"
 GEN_BOT_FILE_PREFIX = ".bottom-"
-MODEL_STR = "trn2025-09-04_16.27.59_bench_torch2.4_bc3784f_lr0.01_bs22_ep75_onecycle_firstpass_RTX_4090_py3.12_torch2.8.0+cu128_run1-ep75"
+DEFAULT_MODEL_STR = None  # Model to use for generated lines; selected via UI
 
 # Data reduction settings to avoid message size limits
 MAX_PINGS = 1000  # Maximum number of pings to display
@@ -36,6 +36,7 @@ USE_MANUAL_MAX_DEPTH = False  # Whether to force manual max depth from sidebar
 
 # sample path
 # /mnt/scratch/echohub/s3/echo-jh/ErieEastBasin2024/EB_S15_G761/
+DEFAULT_DATA_PATH = "/mnt/scratch/echohub/s3/echo-jh/ErieEastBasin/2023/"
 
 # --- CORE APPLICATION LOGIC ---
 
@@ -118,6 +119,7 @@ def load_data_for_file(
     max_depth_meters,
     min_sv,
     max_sv,
+    model_str,
 ):
     """
     Loads all necessary data for a single echogram file using echofilter data loaders.
@@ -128,15 +130,37 @@ def load_data_for_file(
             f_path, row_len_selector="max"
         )
 
-        # 2. Load ground truth top line
-        true_evl_path = f_path.split(RAW_FILE_SUFFIX)[0] + TRUTH_TOP_FILE_SUFFIX
-        _, d_top_true = echofilter.raw.loader.evl_loader(true_evl_path)
+        # 2. Load ground truth top line: accept multiple suffixes
+        top_base = f_path.split(RAW_FILE_SUFFIX)[0]
+        d_top_true = None
+        last_tried_top_paths = []
+        for suffix in TRUTH_TOP_FILE_SUFFIXES:
+            candidate_path = top_base + suffix
+            last_tried_top_paths.append(os.path.basename(candidate_path))
+            if os.path.exists(candidate_path):
+                _, d_top_true = echofilter.raw.loader.evl_loader(candidate_path)
+                break
+        if d_top_true is None:
+            # Fall back to raising a clear error so the outer handler shows it
+            raise FileNotFoundError(
+                "Top truth EVL not found (tried: " + ", ".join(last_tried_top_paths) + ")"
+            )
 
-        # 3. Load generated top line
-        gen_evl_path = (
-            f_path.split(".csv")[0] + GEN_TOP_FILE_PREFIX + MODEL_STR + ".evl"
-        )
-        _, d_top_gen = echofilter.raw.loader.evl_loader(gen_evl_path)
+        # 3. Load generated top line (turbulence)
+        if model_str:
+            gen_evl_path = (
+                f_path.split(".csv")[0] + GEN_TOP_FILE_PREFIX + model_str + ".evl"
+            )
+            try:
+                _, d_top_gen = echofilter.raw.loader.evl_loader(gen_evl_path)
+            except FileNotFoundError:
+                st.warning(
+                    f"Generated top EVL not found: {os.path.basename(gen_evl_path)}"
+                )
+                d_top_gen = np.full(signals_raw.shape[0], np.nan)
+        else:
+            st.info("No model selected for generated top line; displaying as NaN")
+            d_top_gen = np.full(signals_raw.shape[0], np.nan)
 
         # Determine number of pings for interpolation and fallbacks
         num_pings = signals_raw.shape[0]
@@ -169,20 +193,24 @@ def load_data_for_file(
             d_bottom_true = np.full(num_pings, np.nan)
 
         # 5. Load generated bottom line (suffix: _Sv_raw.bottom-<MODEL_STR>.evl)
-        gen_bottom_path = (
-            f_path.split(".csv")[0] + GEN_BOT_FILE_PREFIX + MODEL_STR + ".evl"
-        )
-        try:
-            _, d_bottom_gen_raw = echofilter.raw.loader.evl_loader(gen_bottom_path)
-            d_bottom_gen = np.interp(
-                np.linspace(0, len(d_bottom_gen_raw), num_pings),
-                np.arange(len(d_bottom_gen_raw)),
-                d_bottom_gen_raw,
+        if model_str:
+            gen_bottom_path = (
+                f_path.split(".csv")[0] + GEN_BOT_FILE_PREFIX + model_str + ".evl"
             )
-        except FileNotFoundError:
-            st.warning(
-                f"Generated bottom EVL not found: {os.path.basename(gen_bottom_path)}"
-            )
+            try:
+                _, d_bottom_gen_raw = echofilter.raw.loader.evl_loader(gen_bottom_path)
+                d_bottom_gen = np.interp(
+                    np.linspace(0, len(d_bottom_gen_raw), num_pings),
+                    np.arange(len(d_bottom_gen_raw)),
+                    d_bottom_gen_raw,
+                )
+            except FileNotFoundError:
+                st.warning(
+                    f"Generated bottom EVL not found: {os.path.basename(gen_bottom_path)}"
+                )
+                d_bottom_gen = np.full(num_pings, np.nan)
+        else:
+            st.info("No model selected for generated bottom line; displaying as NaN")
             d_bottom_gen = np.full(num_pings, np.nan)
         # Reduce data size to avoid message size limits
         (
@@ -362,6 +390,35 @@ def create_interactive_plot(data):
 
 # --- STREAMLIT UI ---
 
+def _scan_available_model_strings_for_file(raw_csv_path):
+    """Return sorted unique model strings available for the given raw CSV file.
+
+    Looks for files alongside the CSV matching:
+      <base> + GEN_BOT_FILE_PREFIX + <MODEL_STR> + ".evl"
+      <base> + GEN_TOP_FILE_PREFIX + <MODEL_STR> + ".evl"
+    where <base> is raw_csv_path without the trailing ".csv".
+    """
+    try:
+        directory = os.path.dirname(raw_csv_path)
+        base_no_csv = raw_csv_path.split(".csv")[0]
+        candidates = set()
+        for fname in os.listdir(directory):
+            fpath = os.path.join(directory, fname)
+            # Bottom generated
+            bot_prefix = os.path.basename(base_no_csv) + GEN_BOT_FILE_PREFIX
+            top_prefix = os.path.basename(base_no_csv) + GEN_TOP_FILE_PREFIX
+            if fname.startswith(bot_prefix) and fname.endswith(".evl"):
+                model = fname[len(bot_prefix):-4]
+                if model:
+                    candidates.add(model)
+            elif fname.startswith(top_prefix) and fname.endswith(".evl"):
+                model = fname[len(top_prefix):-4]
+                if model:
+                    candidates.add(model)
+        return sorted(candidates)
+    except Exception:
+        return []
+
 st.set_page_config(page_title="Echogram Inspector", page_icon="🔎", layout="wide")
 st.title("Interactive Echogram Inspector 🔎")
 
@@ -378,13 +435,13 @@ with st.sidebar:
     st.header("Controls")
     data_path = st.text_input(
         "Enter Path to Data Directory",
-        placeholder="/mnt/scratch/echohub/s3/echo-jh/ErieEastBasin2024/",
+        placeholder=DEFAULT_DATA_PATH,
         value=st.session_state.data_path,
     )
 
     if st.button("Use Default Path"):
         st.session_state.data_path = (
-            "/mnt/scratch/echohub/s3/echo-jh/ErieEastBasin2024/"
+            DEFAULT_DATA_PATH
         )
         st.rerun()
 
@@ -447,6 +504,28 @@ with st.sidebar:
                 st.rerun()
 
             st.info(f"Current file: **{file_options[st.session_state.file_index]}**")
+
+            # Scan for available model strings in the selected file's directory
+            current_file_full = st.session_state.filenames[st.session_state.file_index]
+            available_models = _scan_available_model_strings_for_file(current_file_full)
+            if "selected_model" not in st.session_state:
+                st.session_state.selected_model = available_models[0] if available_models else None
+            # Allow user to select a model string for generated lines
+            st.caption("Select generated model (for turbulence and bottom lines)")
+            model_options = ["<none>"] + available_models if available_models else ["<none>"]
+            # Compute default index = last selected model if present, else "<none>"
+            default_index = (
+                (available_models.index(st.session_state.selected_model) + 1)
+                if (st.session_state.selected_model in available_models)
+                else 0
+            )
+            selected_model = st.selectbox(
+                "Model:",
+                options=model_options,
+                index=default_index,
+                key="model_dropdown",
+            )
+            st.session_state.selected_model = None if selected_model == "<none>" else selected_model
 
             # Show dropdown status
             st.caption(f"Dropdown shows: {file_options[selected_index]}")
@@ -511,6 +590,7 @@ if st.session_state.filenames:
         MAX_DEPTH_METERS,
         SIGNAL_CLIP_MIN,
         SIGNAL_CLIP_MAX,
+        st.session_state.get("selected_model"),
     )
 
     if data:
