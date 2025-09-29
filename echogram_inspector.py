@@ -392,36 +392,6 @@ with st.sidebar:
     if data_path != st.session_state.data_path:
         st.session_state.data_path = data_path
 
-    st.header("Data Reduction Settings")
-    st.caption("Adjust these to reduce data size and avoid browser limits")
-
-    max_pings = st.slider("Max Pings", 100, 2000, MAX_PINGS, 100)
-    max_depth_samples = st.slider("Max Depth Samples", 100, 1000, MAX_DEPTH_SAMPLES, 50)
-    min_depth = st.number_input("Min Depth (m)", 0.0, 50.0, MIN_DEPTH_METERS, 0.5)
-    USE_MANUAL_MAX_DEPTH = st.checkbox("Use manual max depth", value=False)
-    max_depth = st.number_input(
-        "Max Depth (m)",
-        1.0,
-        100.0,
-        MAX_DEPTH_METERS,
-        0.5,
-        disabled=not USE_MANUAL_MAX_DEPTH,
-    )
-
-    st.header("Signal Range Settings")
-    st.caption("Adjust the SV (volume backscatter) display range")
-
-    min_sv = st.number_input("Min SV (dB)", -120.0, 0.0, float(SIGNAL_CLIP_MIN), 1.0)
-    max_sv = st.number_input("Max SV (dB)", -120.0, 0.0, float(SIGNAL_CLIP_MAX), 1.0)
-
-    # Update global settings
-    MAX_PINGS = max_pings
-    MAX_DEPTH_SAMPLES = max_depth_samples
-    MIN_DEPTH_METERS = min_depth
-    MAX_DEPTH_METERS = max_depth
-    SIGNAL_CLIP_MIN = min_sv
-    SIGNAL_CLIP_MAX = max_sv
-
     if st.session_state.data_path and os.path.isdir(st.session_state.data_path):
         # Scan directory and subdirectories for raw files
         st.session_state.filenames = []
@@ -490,6 +460,36 @@ with st.sidebar:
 
     elif st.session_state.data_path:
         st.error("The provided path is not a valid directory.")
+
+    st.header("Data Reduction Settings")
+    st.caption("Adjust these to reduce data size and avoid browser limits")
+
+    max_pings = st.slider("Max Pings", 100, 2000, MAX_PINGS, 100)
+    max_depth_samples = st.slider("Max Depth Samples", 100, 1000, MAX_DEPTH_SAMPLES, 50)
+    min_depth = st.number_input("Min Depth (m)", 0.0, 50.0, MIN_DEPTH_METERS, 0.5)
+    USE_MANUAL_MAX_DEPTH = st.checkbox("Use manual max depth", value=False)
+    max_depth = st.number_input(
+        "Max Depth (m)",
+        1.0,
+        100.0,
+        MAX_DEPTH_METERS,
+        0.5,
+        disabled=not USE_MANUAL_MAX_DEPTH,
+    )
+
+    st.header("Signal Range Settings")
+    st.caption("Adjust the SV (volume backscatter) display range")
+
+    min_sv = st.number_input("Min SV (dB)", -120.0, 0.0, float(SIGNAL_CLIP_MIN), 1.0)
+    max_sv = st.number_input("Max SV (dB)", -120.0, 0.0, float(SIGNAL_CLIP_MAX), 1.0)
+
+    # Update global settings
+    MAX_PINGS = max_pings
+    MAX_DEPTH_SAMPLES = max_depth_samples
+    MIN_DEPTH_METERS = min_depth
+    MAX_DEPTH_METERS = max_depth
+    SIGNAL_CLIP_MIN = min_sv
+    SIGNAL_CLIP_MAX = max_sv
 
 # Main content area
 if st.session_state.filenames:
