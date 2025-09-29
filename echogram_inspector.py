@@ -17,8 +17,10 @@ import echofilter.raw
 # --- Configuration ---
 # Constants for file matching
 RAW_FILE_SUFFIX = "_Sv_raw.csv"
-TRUTH_FILE_SUFFIX = "_surface.evl"
-GEN_FILE_PREFIX = ".turbulence-"
+TRUTH_TOP_FILE_SUFFIX = "_surface.evl"
+TRUTH_BOT_FILE_SUFFIX = "_bottom.evl"
+GEN_TOP_FILE_PREFIX = ".turbulence-"
+GEN_BOT_FILE_PREFIX = ".bottom-"
 MODEL_STR = "trn2025-09-04_16.27.59_bench_torch2.4_bc3784f_lr0.01_bs22_ep75_onecycle_firstpass_RTX_4090_py3.12_torch2.8.0+cu128_run1-ep75"
 
 # Data reduction settings to avoid message size limits
@@ -38,7 +40,15 @@ SIGNAL_CLIP_MAX = -20  # Maximum signal value to display
 
 
 def reduce_data_size(
-    signals, timestamps, depths, d_top_true, d_top_gen, min_sv, max_sv
+    signals,
+    timestamps,
+    depths,
+    d_top_true,
+    d_top_gen,
+    d_bottom_true,
+    d_bottom_gen,
+    min_sv,
+    max_sv,
 ):
     """
     Reduce data size to avoid Streamlit message size limits.
@@ -67,16 +77,22 @@ def reduce_data_size(
         timestamps_filtered = timestamps[ping_indices]
         d_top_true_filtered = d_top_true[ping_indices]
         d_top_gen_filtered = d_top_gen[ping_indices]
+        d_bottom_true_filtered = d_bottom_true[ping_indices]
+        d_bottom_gen_filtered = d_bottom_gen[ping_indices]
     elif PING_DOWNSAMPLE_FACTOR > 1:
         ping_indices = np.arange(0, len(timestamps), PING_DOWNSAMPLE_FACTOR)
         signals_filtered = signals_filtered[ping_indices, :]
         timestamps_filtered = timestamps[ping_indices]
         d_top_true_filtered = d_top_true[ping_indices]
         d_top_gen_filtered = d_top_gen[ping_indices]
+        d_bottom_true_filtered = d_bottom_true[ping_indices]
+        d_bottom_gen_filtered = d_bottom_gen[ping_indices]
     else:
         timestamps_filtered = timestamps
         d_top_true_filtered = d_top_true
         d_top_gen_filtered = d_top_gen
+        d_bottom_true_filtered = d_bottom_true
+        d_bottom_gen_filtered = d_bottom_gen
 
     # 4. Clip signal values
     signals_filtered = np.clip(signals_filtered, min_sv, max_sv)
@@ -87,6 +103,8 @@ def reduce_data_size(
         depths_filtered,
         d_top_true_filtered,
         d_top_gen_filtered,
+        d_bottom_true_filtered,
+        d_bottom_gen_filtered,
     )
 
 
@@ -109,16 +127,20 @@ def load_data_for_file(
             f_path, row_len_selector="max"
         )
 
-        # 2. Load ground truth turbulence line
-        true_evl_path = f_path.split(RAW_FILE_SUFFIX)[0] + TRUTH_FILE_SUFFIX
+        # 2. Load ground truth top line
+        true_evl_path = f_path.split(RAW_FILE_SUFFIX)[0] + TRUTH_TOP_FILE_SUFFIX
         _, d_top_true = echofilter.raw.loader.evl_loader(true_evl_path)
 
-        # 3. Load echofilter-generated turbulence line
-        gen_evl_path = f_path.split(".csv")[0] + GEN_FILE_PREFIX + MODEL_STR + ".evl"
+        # 3. Load generated top line
+        gen_evl_path = (
+            f_path.split(".csv")[0] + GEN_TOP_FILE_PREFIX + MODEL_STR + ".evl"
+        )
         _, d_top_gen = echofilter.raw.loader.evl_loader(gen_evl_path)
 
-        # Ensure lines are the same length as the number of pings
+        # Determine number of pings for interpolation and fallbacks
         num_pings = signals_raw.shape[0]
+
+        # Interpolate top lines to match number of pings
         d_top_true = np.interp(
             np.linspace(0, len(d_top_true), num_pings),
             np.arange(len(d_top_true)),
@@ -130,6 +152,37 @@ def load_data_for_file(
             d_top_gen,
         )
 
+        # 4. Load ground truth bottom line (suffix: _bottom.evl)
+        bottom_truth_path = f_path.split(RAW_FILE_SUFFIX)[0] + TRUTH_BOT_FILE_SUFFIX
+        try:
+            _, d_bottom_true_raw = echofilter.raw.loader.evl_loader(bottom_truth_path)
+            d_bottom_true = np.interp(
+                np.linspace(0, len(d_bottom_true_raw), num_pings),
+                np.arange(len(d_bottom_true_raw)),
+                d_bottom_true_raw,
+            )
+        except FileNotFoundError:
+            st.warning(
+                f"Bottom truth EVL not found: {os.path.basename(bottom_truth_path)}"
+            )
+            d_bottom_true = np.full(num_pings, np.nan)
+
+        # 5. Load generated bottom line (suffix: _Sv_raw.bottom-<MODEL_STR>.evl)
+        gen_bottom_path = (
+            f_path.split(".csv")[0] + GEN_BOT_FILE_PREFIX + MODEL_STR + ".evl"
+        )
+        try:
+            _, d_bottom_gen_raw = echofilter.raw.loader.evl_loader(gen_bottom_path)
+            d_bottom_gen = np.interp(
+                np.linspace(0, len(d_bottom_gen_raw), num_pings),
+                np.arange(len(d_bottom_gen_raw)),
+                d_bottom_gen_raw,
+            )
+        except FileNotFoundError:
+            st.warning(
+                f"Generated bottom EVL not found: {os.path.basename(gen_bottom_path)}"
+            )
+            d_bottom_gen = np.full(num_pings, np.nan)
         # Reduce data size to avoid message size limits
         (
             signals_reduced,
@@ -137,8 +190,18 @@ def load_data_for_file(
             depths_reduced,
             d_top_true_reduced,
             d_top_gen_reduced,
+            d_bottom_true_reduced,
+            d_bottom_gen_reduced,
         ) = reduce_data_size(
-            signals_raw, ts_raw, depths_raw, d_top_true, d_top_gen, min_sv, max_sv
+            signals_raw,
+            ts_raw,
+            depths_raw,
+            d_top_true,
+            d_top_gen,
+            d_bottom_true,
+            d_bottom_gen,
+            min_sv,
+            max_sv,
         )
 
         return {
@@ -147,6 +210,8 @@ def load_data_for_file(
             "depths": depths_reduced,
             "d_top_true": d_top_true_reduced,
             "d_top_gen": d_top_gen_reduced,
+            "d_bottom_true": d_bottom_true_reduced,
+            "d_bottom_gen": d_bottom_gen_reduced,
             "original_shape": signals_raw.shape,  # Keep track of original size
         }
     except FileNotFoundError as e:
@@ -196,8 +261,8 @@ def create_interactive_plot(data):
             x=x_dt,
             y=data["d_top_true"],
             mode="lines",
-            name="Ground Truth",
-            line=dict(color="cyan", width=2),
+            name="Ground Truth Top Line",
+            line=dict(color="black", width=2),
         )
     )
 
@@ -207,8 +272,30 @@ def create_interactive_plot(data):
             x=x_dt,
             y=data["d_top_gen"],
             mode="lines",
-            name="Generated Line",
-            line=dict(color="red", width=2, dash="dash"),
+            name="Generated Top Line",
+            line=dict(color="red", width=2),
+        )
+    )
+
+    # Add the ground truth bottom line
+    fig.add_trace(
+        go.Scatter(
+            x=x_dt,
+            y=data["d_bottom_true"],
+            mode="lines",
+            name="Ground Truth Bottom Line",
+            line=dict(color="black", width=2, dash="dot"),
+        )
+    )
+
+    # Add the generated bottom line
+    fig.add_trace(
+        go.Scatter(
+            x=x_dt,
+            y=data["d_bottom_gen"],
+            mode="lines",
+            name="Generated Bottom Line",
+            line=dict(color="red", width=2, dash="dot"),
         )
     )
 
@@ -239,7 +326,7 @@ def create_interactive_plot(data):
 
 # --- STREAMLIT UI ---
 
-st.set_page_config(layout="wide")
+st.set_page_config(page_title="Echogram Inspector", page_icon="🔎", layout="wide")
 st.title("Interactive Echogram Inspector 🔎")
 
 # Initialize session state for tracking file index
