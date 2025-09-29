@@ -32,6 +32,7 @@ MIN_DEPTH_METERS = 0.0  # Minimum depth to display (meters)
 MAX_DEPTH_METERS = 5.0  # Maximum depth to display (meters)
 SIGNAL_CLIP_MIN = -80  # Minimum signal value to display
 SIGNAL_CLIP_MAX = -20  # Maximum signal value to display
+USE_MANUAL_MAX_DEPTH = False  # Whether to force manual max depth from sidebar
 
 # sample path
 # /mnt/scratch/echohub/s3/echo-jh/ErieEastBasin2024/EB_S15_G761/
@@ -40,21 +41,13 @@ SIGNAL_CLIP_MAX = -20  # Maximum signal value to display
 
 
 def reduce_data_size(
-    signals,
-    timestamps,
-    depths,
-    d_top_true,
-    d_top_gen,
-    d_bottom_true,
-    d_bottom_gen,
-    min_sv,
-    max_sv,
+    signals, timestamps, depths, d_top_true, d_top_gen, d_bottom_true, d_bottom_gen, min_sv, max_sv
 ):
     """
     Reduce data size to avoid Streamlit message size limits.
     """
-    # 1. Apply depth filtering
-    depth_mask = (depths >= MIN_DEPTH_METERS) & (depths <= MAX_DEPTH_METERS)
+    # 1. Depth selection: keep full available depth, we'll control display range at plot time
+    depth_mask = np.ones_like(depths, dtype=bool)
     signals_filtered = signals[:, depth_mask]
     depths_filtered = depths[depth_mask]
 
@@ -132,9 +125,7 @@ def load_data_for_file(
         _, d_top_true = echofilter.raw.loader.evl_loader(true_evl_path)
 
         # 3. Load generated top line
-        gen_evl_path = (
-            f_path.split(".csv")[0] + GEN_TOP_FILE_PREFIX + MODEL_STR + ".evl"
-        )
+        gen_evl_path = f_path.split(".csv")[0] + GEN_TOP_FILE_PREFIX + MODEL_STR + ".evl"
         _, d_top_gen = echofilter.raw.loader.evl_loader(gen_evl_path)
 
         # Determine number of pings for interpolation and fallbacks
@@ -162,15 +153,11 @@ def load_data_for_file(
                 d_bottom_true_raw,
             )
         except FileNotFoundError:
-            st.warning(
-                f"Bottom truth EVL not found: {os.path.basename(bottom_truth_path)}"
-            )
+            st.warning(f"Bottom truth EVL not found: {os.path.basename(bottom_truth_path)}")
             d_bottom_true = np.full(num_pings, np.nan)
 
         # 5. Load generated bottom line (suffix: _Sv_raw.bottom-<MODEL_STR>.evl)
-        gen_bottom_path = (
-            f_path.split(".csv")[0] + GEN_BOT_FILE_PREFIX + MODEL_STR + ".evl"
-        )
+        gen_bottom_path = f_path.split(".csv")[0] + GEN_BOT_FILE_PREFIX + MODEL_STR + ".evl"
         try:
             _, d_bottom_gen_raw = echofilter.raw.loader.evl_loader(gen_bottom_path)
             d_bottom_gen = np.interp(
@@ -179,9 +166,7 @@ def load_data_for_file(
                 d_bottom_gen_raw,
             )
         except FileNotFoundError:
-            st.warning(
-                f"Generated bottom EVL not found: {os.path.basename(gen_bottom_path)}"
-            )
+            st.warning(f"Generated bottom EVL not found: {os.path.basename(gen_bottom_path)}")
             d_bottom_gen = np.full(num_pings, np.nan)
         # Reduce data size to avoid message size limits
         (
@@ -193,15 +178,7 @@ def load_data_for_file(
             d_bottom_true_reduced,
             d_bottom_gen_reduced,
         ) = reduce_data_size(
-            signals_raw,
-            ts_raw,
-            depths_raw,
-            d_top_true,
-            d_top_gen,
-            d_bottom_true,
-            d_bottom_gen,
-            min_sv,
-            max_sv,
+            signals_raw, ts_raw, depths_raw, d_top_true, d_top_gen, d_bottom_true, d_bottom_gen, min_sv, max_sv
         )
 
         return {
@@ -299,12 +276,37 @@ def create_interactive_plot(data):
         )
     )
 
+    # Decide y-axis depth range
+    full_max_depth = float(np.nanmax(data["depths"])) if len(data["depths"]) > 0 else None
+
+    # If user enables manual max depth, respect it; otherwise use deepest bottom or full depth
+    if 'USE_MANUAL_MAX_DEPTH' in globals() and USE_MANUAL_MAX_DEPTH and full_max_depth is not None:
+        target_max_depth = min(float(MAX_DEPTH_METERS), full_max_depth)
+    else:
+        try:
+            max_bottom_depth = np.nanmax(
+                np.concatenate([
+                    np.asarray(data.get("d_bottom_true", [])).ravel(),
+                    np.asarray(data.get("d_bottom_gen", [])).ravel(),
+                ])
+            )
+        except Exception:
+            max_bottom_depth = np.nan
+        # Add 1 m offset below the deepest bottom, cap by available depth
+        if np.isfinite(max_bottom_depth) and full_max_depth is not None:
+            target_max_depth = min(float(max_bottom_depth) + 1.0, full_max_depth)
+        else:
+            target_max_depth = full_max_depth
+
     # Update layout
     fig.update_layout(
         title="Echogram Inspector",
         xaxis_title="Time",
         yaxis_title="Depth (m)",
-        yaxis=dict(autorange="reversed"),  # Depths increase downwards
+        yaxis=dict(
+            autorange="reversed" if target_max_depth is None else False,
+            range=[target_max_depth, float(MIN_DEPTH_METERS)] if target_max_depth is not None else None,
+        ),  # Depths increase downwards
         height=800,  # Increase plot height
         margin=dict(l=80, r=120, t=110, b=60),  # Extra top margin for centered legend
         legend=dict(
@@ -362,7 +364,8 @@ with st.sidebar:
     max_pings = st.slider("Max Pings", 100, 2000, MAX_PINGS, 100)
     max_depth_samples = st.slider("Max Depth Samples", 100, 1000, MAX_DEPTH_SAMPLES, 50)
     min_depth = st.number_input("Min Depth (m)", 0.0, 50.0, MIN_DEPTH_METERS, 0.5)
-    max_depth = st.number_input("Max Depth (m)", 1.0, 100.0, MAX_DEPTH_METERS, 0.5)
+    USE_MANUAL_MAX_DEPTH = st.checkbox("Use manual max depth", value=False)
+    max_depth = st.number_input("Max Depth (m)", 1.0, 100.0, MAX_DEPTH_METERS, 0.5, disabled=not USE_MANUAL_MAX_DEPTH)
 
     st.header("Signal Range Settings")
     st.caption("Adjust the SV (volume backscatter) display range")
