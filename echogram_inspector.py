@@ -302,7 +302,7 @@ def create_interactive_plot(data):
             y=data["d_top_gen"],
             mode="lines",
             name="Generated Top Line",
-            line=dict(color="red", width=2),
+            line=dict(color="white", width=2, dash="dot"),
         )
     )
 
@@ -324,7 +324,7 @@ def create_interactive_plot(data):
             y=data["d_bottom_gen"],
             mode="lines",
             name="Generated Bottom Line",
-            line=dict(color="red", width=2, dash="dot"),
+            line=dict(color="white", width=2, dash="dash"),
         )
     )
 
@@ -377,7 +377,7 @@ def create_interactive_plot(data):
             y=1.06,
             xanchor="center",
             yanchor="bottom",
-            bgcolor="rgba(255,255,255,0.8)",
+            bgcolor="rgba(240,240,240,0.9)",
             bordercolor="black",
             borderwidth=1,
         ),
@@ -612,9 +612,16 @@ if st.session_state.filenames:
             ) / (data["signals"].shape[0] * data["signals"].shape[1])
             st.metric("Reduction Factor", f"{reduction_factor:.1f}x")
 
-        # Calculate MAE for display
-        mae = np.mean(np.abs(data["d_top_true"] - data["d_top_gen"]))
-        st.metric(label="Mean Absolute Error (m)", value=f"{mae:.4f}")
+        # Calculate MAE for display - separate for top and bottom lines
+        mae_top = np.mean(np.abs(data["d_top_true"] - data["d_top_gen"]))
+        mae_bottom = np.mean(np.abs(data["d_bottom_true"] - data["d_bottom_gen"]))
+        
+        # Display MAE metrics in columns
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric(label="Top Line MAE (m)", value=f"{mae_top:.4f}")
+        with col2:
+            st.metric(label="Bottom Line MAE (m)", value=f"{mae_bottom:.4f}")
 
         # Create and display the plot
         fig = create_interactive_plot(data)
