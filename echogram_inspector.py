@@ -3,6 +3,7 @@ Interactive Echogram Inspector using echofilter data loaders.
 This application allows you to browse through echogram files and 
 compare ground truth turbulence lines with generated predictions.
 """
+from utils import maybe_interpolate_line
 
 import streamlit as st
 import plotly.graph_objects as go
@@ -138,7 +139,8 @@ def load_data_for_file(
             candidate_path = top_base + suffix
             last_tried_top_paths.append(os.path.basename(candidate_path))
             if os.path.exists(candidate_path):
-                _, d_top_true = echofilter.raw.loader.evl_loader(candidate_path)
+                t_top_true, d_top_true = echofilter.raw.loader.evl_loader(candidate_path)
+                d_top_true = maybe_interpolate_line(ts_raw, t_top_true, d_top_true)
                 break
         if d_top_true is None:
             # Fall back to raising a clear error so the outer handler shows it
@@ -165,27 +167,12 @@ def load_data_for_file(
         # Determine number of pings for interpolation and fallbacks
         num_pings = signals_raw.shape[0]
 
-        # Interpolate top lines to match number of pings
-        d_top_true = np.interp(
-            np.linspace(0, len(d_top_true), num_pings),
-            np.arange(len(d_top_true)),
-            d_top_true,
-        )
-        d_top_gen = np.interp(
-            np.linspace(0, len(d_top_gen), num_pings),
-            np.arange(len(d_top_gen)),
-            d_top_gen,
-        )
-
         # 4. Load ground truth bottom line (suffix: _bottom.evl)
         bottom_truth_path = f_path.split(RAW_FILE_SUFFIX)[0] + TRUTH_BOT_FILE_SUFFIX
         try:
-            _, d_bottom_true_raw = echofilter.raw.loader.evl_loader(bottom_truth_path)
-            d_bottom_true = np.interp(
-                np.linspace(0, len(d_bottom_true_raw), num_pings),
-                np.arange(len(d_bottom_true_raw)),
-                d_bottom_true_raw,
-            )
+            t_bottom_true_raw, d_bottom_true_raw = echofilter.raw.loader.evl_loader(bottom_truth_path)
+            d_bottom_true = maybe_interpolate_line(ts_raw, t_bottom_true_raw, d_bottom_true_raw)
+            
         except FileNotFoundError:
             st.warning(
                 f"Bottom truth EVL not found: {os.path.basename(bottom_truth_path)}"
